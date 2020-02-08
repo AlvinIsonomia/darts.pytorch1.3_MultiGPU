@@ -24,15 +24,16 @@ from architect import Architect
 '''
 data:数据集的目录   batchsize:不能调太大
 learning_rate   learning_rate_min   momentum   weight_decay: optimizer4件套
-report_freq: 打印报告的频率 TODO 康康报告格式   gpu:TODO 解决多GPU显存不平衡
-epoch: 默认50 TODO 为什么这么短？
-init_channels, layers: supernet的大小？TODO
+report_freq: 打印报告的频率 
+epoch: 默认50
+init_channels: 初始特征通道数，随着网络加深特征通道数会成倍增长
+layers: 进行cell的搜索时，网络框架由几个cell组成
 cutout, cutout_length: TODO 是否使用cutout及其参数？？？
-drop_path_prob: TODO drop path的概率？？？
+drop_path_prob: 减少搜索过程中的计算时间以及内存占用的一个参数
 save: 保存路径名    seed:随机种子
-grad_clip:TODO 梯度裁剪是干啥的？ train_portion:训练数据的比例，剩下的会当作“验证数据”（但不在验证集中
+grad_clip:梯度裁剪用以解决梯度爆炸 train_portion:训练数据的比例，剩下的会当作“验证数据”（但不在验证集中
 unrolled: one-step unrolled validation loss TODO
-arch_learning_rate/arch_weight_decay: arch encoding的参数？？？TODO
+arch_learning_rate/arch_weight_decay: 架构参数学习率，用以更新网络架构参数
 '''
 parser = argparse.ArgumentParser("cifar")
 parser.add_argument('--data', type=str, default='../data', help='location of the data corpus')
@@ -42,7 +43,7 @@ parser.add_argument('--learning_rate_min', type=float, default=0.001, help='min 
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
 parser.add_argument('--weight_decay', type=float, default=3e-4, help='weight decay')
 parser.add_argument('--report_freq', type=float, default=50, help='report frequency')
-parser.add_argument('--gpu', type=str, default='0', help='gpu device id, split with ","')
+parser.add_argument('--gpu', type=str, default='2,3,4,5', help='gpu device id, split with ","')
 parser.add_argument('--epochs', type=int, default=50, help='num of training epochs')
 parser.add_argument('--init_channels', type=int, default=16, help='num of init channels')
 parser.add_argument('--layers', type=int, default=8, help='total number of layers')
@@ -76,17 +77,17 @@ logging.getLogger().addHandler(fh)
 CIFAR_CLASSES = 10
 
 
-
 def main():
+  os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
   if not torch.cuda.is_available():
     logging.info('no gpu device available')
     sys.exit(1)
 
   np.random.seed(args.seed)
-  # torch.cuda.set_device(args.gpu)
   gpus = [int(i) for i in args.gpu.split(',')] # argparser传入的参数转为int list
   if len(gpus) == 1:
     torch.cuda.set_device(int(args.gpu))
+
   # cudnn.benchmark = True
   torch.manual_seed(args.seed)
   # cudnn.enabled=True
@@ -96,28 +97,29 @@ def main():
 
   # loss function 
   criterion = nn.CrossEntropyLoss()
-  criterion = criterion.cuda()
-  # 初始化模型
+  criterion = criterion.cuda() # TODO:损失函数应该什么时候配置到Cuda上？
+  
+  # 初始化模型，构建一个超网，并将其部署到GPU上
   model = Network(args.init_channels, CIFAR_CLASSES, args.layers, criterion)
   model = model.cuda()
-  if len(gpus)>1:
-    print("True")
-    model = nn.parallel.DataParallel(model, device_ids=gpus, output_device=gpus[0])
-    model = model.module #FIXME:去掉这段
 
-  arch_params = list(map(id, model.arch_parameters())) # FIXME:去掉时连锁报错
-  weight_params = filter(lambda p: id(p) not in arch_params,
-                         model.parameters()) # FIXME:去掉时连锁报错
+  arch_params = list(map(id, model.arch_parameters())) 
+  weight_params = filter(lambda p: id(p) not in arch_params, #暂时没看到怎么用
+                         model.parameters()) 
 
   logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
   optimizer = torch.optim.SGD(
-      # model.parameters(),
-      weight_params,
-      args.learning_rate,
+      model.parameters(), # 优化器更新的参数
+      # weight_params,
+      args.learning_rate, # 学习率
       momentum=args.momentum,
       weight_decay=args.weight_decay)
-  optimizer = nn.DataParallel(optimizer, device_ids=gpus)
+
+  scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, float(args.epochs), eta_min=args.learning_rate_min)
+
+
 
   train_transform, valid_transform = utils._data_transforms_cifar10(args)
   train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
@@ -125,7 +127,8 @@ def main():
   num_train = len(train_data)
   indices = list(range(num_train))
   split = int(np.floor(args.train_portion * num_train)) # 
-  print("使用多线程做dataloader会报错！") # FIXME: 确定没人占用的时候多线程是否报错!
+  print("使用多线程做dataloader会报错！")
+  # 数据集划分为训练和验证集，并打包成有序的结构
   train_queue = torch.utils.data.DataLoader(
       train_data, batch_size=args.batch_size,
       sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[:split]),
@@ -136,21 +139,25 @@ def main():
       sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[split:num_train]),
       pin_memory=True, num_workers=0)
 
-  scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer.module, float(args.epochs), eta_min=args.learning_rate_min)
-
+  # 在Architecture中创建架构参数和架构参数更新函数
   architect = Architect(model, criterion, args) #有一个专门的architect.py 不知道是干嘛的，train要输入
+  model = nn.parallel.DataParallel(model) 
+
+  '''  
+  if len(gpus)>1:
+    print("True")
+    print(gpus)
+  model = nn.parallel.DataParallel(model)
+  '''
 
   for epoch in range(args.epochs):
-    scheduler.step() # FIXME:这个地方要改，不然学习率无法动态调整
     lr = scheduler.get_lr()[0]
     logging.info('epoch %d lr %e', epoch, lr)
-
-    genotype = model.genotype() # model_search.py里待搜索的Network类型自带的参数
+    genotype = model.module.genotype() # model_search.py里待搜索的Network类型自带的参数
     logging.info('genotype = %s', genotype)# 打印当前epoch 的cell的网络结构
+    print(F.softmax(model.module.alphas_normal, dim=-1))
+    print(F.softmax(model.module.alphas_reduce, dim=-1))
 
-    print(F.softmax(model.alphas_normal, dim=-1))
-    print(F.softmax(model.alphas_reduce, dim=-1))
 
     # training
     train_acc, train_obj = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr)
@@ -158,10 +165,11 @@ def main():
 
     # validation
     with torch.no_grad():
-      valid_acc, valid_obj = infer(valid_queue, model, criterion)
+      valid_acc, valid_obj = infer(valid_queue, model.module, criterion)
     logging.info('valid_acc %f', valid_acc)
+    scheduler.step()
 
-    utils.save(model, os.path.join(args.save, 'weights.pt'))
+    utils.save(model.module, os.path.join(args.save, 'weights.pt'))
 
 
 def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr):
@@ -175,7 +183,6 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr):
 
     input = input.cuda()
     target = target.cuda()
-
     # get a random minibatch from the search queue with replacement
     input_search, target_search = next(iter(valid_queue)) # 用于架构参数更新的一个batch
     input_search = input_search.cuda()
@@ -189,7 +196,7 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr):
 
     loss.backward()
     nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-    optimizer.module.step()
+    optimizer.step()
 
     prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
     objs.update(loss.item(), n)
@@ -211,7 +218,6 @@ def infer(valid_queue, model, criterion):
   for step, (input, target) in enumerate(valid_queue):
     input = input.cuda()
     target = target.cuda()
-
     logits = model(input)
     loss = criterion(logits, target)
 
