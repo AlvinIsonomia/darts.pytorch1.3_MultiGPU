@@ -15,7 +15,7 @@ class Architect(object):
     self.network_weight_decay = args.weight_decay
     self.model = model
     self.criterion = criterion
-    self.optimizer = torch.optim.Adam(self.model.arch_parameters(),
+    self.optimizer = torch.optim.Adam(self.model.arch_parameters(), # 架构参数的优化函数（我真想扔外面……）
         lr=args.arch_learning_rate, betas=(0.5, 0.999), weight_decay=args.arch_weight_decay)
     self.optimizer = nn.DataParallel(self.optimizer, device_ids=[0,1])
 
@@ -33,6 +33,9 @@ class Architect(object):
     return unrolled_model
 
   def step(self, input_train, target_train, input_valid, target_valid, eta, network_optimizer, unrolled):
+    '''
+    优化
+    '''
     self.optimizer.zero_grad()
     if unrolled:
         self._backward_step_unrolled(input_train, target_train, input_valid, target_valid, eta, network_optimizer)
@@ -41,6 +44,9 @@ class Architect(object):
     self.optimizer.module.step()
 
   def _backward_step(self, input_valid, target_valid):
+    '''
+    参数更新
+    '''
     logits = self.model(input_valid)
     loss = self.criterion(logits, target_valid)
     # loss = self.model._loss(input_valid, target_valid)

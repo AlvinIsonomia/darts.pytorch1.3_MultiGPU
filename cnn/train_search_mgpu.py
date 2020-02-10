@@ -1,7 +1,3 @@
-# TODO: dataparallel疑似未正常工作，鉴于多卡训练时不同卡的GPU占用差别巨大
-# TODO: 多线程dataloader Broken Pipe错误
-# TODO: 动态学习率调整，参考自己的代码
-# TODO: 搞懂各种概念
 import os
 import sys
 import time
@@ -97,7 +93,7 @@ def main():
 
   # loss function 
   criterion = nn.CrossEntropyLoss()
-  criterion = criterion.cuda() # TODO:损失函数应该什么时候配置到Cuda上？
+  criterion = criterion.cuda() 
   
   # 初始化模型，构建一个超网，并将其部署到GPU上
   model = Network(args.init_channels, CIFAR_CLASSES, args.layers, criterion)
@@ -188,6 +184,7 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr):
     input_search = input_search.cuda()
     target_search = target_search.cuda()
 
+    # PC darts中使用了在epoch>=15时才更新参数。
     architect.step(input, target, input_search, target_search, lr, optimizer, unrolled=args.unrolled)
 
     optimizer.zero_grad()
@@ -210,6 +207,9 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr):
 
 
 def infer(valid_queue, model, criterion):
+  '''
+  在最后一个epoch后打印验证集计算结果
+  '''
   objs = utils.AvgrageMeter()
   top1 = utils.AvgrageMeter()
   top5 = utils.AvgrageMeter()
@@ -218,7 +218,7 @@ def infer(valid_queue, model, criterion):
   for step, (input, target) in enumerate(valid_queue):
     input = input.cuda()
     target = target.cuda()
-    logits = model(input)
+    logits = model(input) # 计算预测结果
     loss = criterion(logits, target)
 
     prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
