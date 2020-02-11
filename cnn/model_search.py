@@ -9,9 +9,9 @@ from genotypes import Genotype
 
 
 class MixedOp(nn.Module):
-'''
-获得混合操作
-'''
+  '''
+  获得混合操作
+  '''
   def __init__(self, C, stride):
     super(MixedOp, self).__init__()
     self._ops = nn.ModuleList()
@@ -30,9 +30,9 @@ class MixedOp(nn.Module):
     return sum(w * op(x) for w, op in zip(weights, self._ops))
 
 class Cell(nn.Module):
-'''
-初始基本单元的构建
-'''
+  '''
+  初始基本单元的构建
+  '''
   def __init__(self, steps, multiplier, C_prev_prev, C_prev, C, reduction, reduction_prev):
     super(Cell, self).__init__()
     self.reduction = reduction
