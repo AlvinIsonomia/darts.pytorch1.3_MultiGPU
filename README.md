@@ -1,4 +1,4 @@
-# darts.pytorch1.1
+# darts.pytorch1.3
 ![Stars](https://img.shields.io/github/stars/AlvinIsonomia/darts.pytorch1.3_MultiGPU)
 ![Forks](https://img.shields.io/github/forks/AlvinIsonomia/darts.pytorch1.3_MultiGPU)
 
